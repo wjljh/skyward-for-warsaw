@@ -165,7 +165,7 @@ fn main() -> Result<()> {
                 .find(paths::PROP_DEFAULT)
                 .with_context(|| format!("{} is not in the ramdisk", paths::PROP_DEFAULT))?
                 .data;
-            let mut props = without(stock_props, &BUILD_VERSION);
+            let mut props = without(without(stock_props, &BUILD_VERSION).as_slice(), &PRODUCT_IDENTITY);
             props.extend_from_slice(b"\nro.secure=0\nro.adb.secure=0\nro.debuggable=1\nro.ota.allow_downgrade=true\n");
             rd.replace(paths::PROP_DEFAULT, props)?;
             img.ramdisk = rd.encode()?;
@@ -245,6 +245,14 @@ fn partition_size(stock: &Path) -> Result<usize> {
 /// they say the wrong one, so they are left out here for the recovery to
 /// fill in from the installed system once it has that mounted.
 const BUILD_VERSION: [&str; 3] = ["ro.build.version.release", "ro.build.version.security_patch", "ro.vendor.build.security_patch"];
+
+/// What the phone's own drivers read to tell which product they run on: the
+/// eSE service of this phone picks its power sequence by
+/// `ro.product.product.name`. The stock recovery carries its own, older
+/// values, and a recovery can set only a property no file has set yet, so
+/// they are left out of the recovery's property file and set from the
+/// installed system instead.
+const PRODUCT_IDENTITY: [&str; 4] = ["ro.product.product.name", "ro.product.product.device", "ro.product.product.model", "ro.build.flavor"];
 
 /// The scheduling profiles a recovery's programs look up by name. A
 /// recovery's cgroup setup mounts no controllers, so of all a system's

@@ -236,7 +236,11 @@ impl App {
                 }
             }
             Event::Image { kind, size, partitions } => {
-                *install = Install::Choosing(Choice { kind, size, partitions, partition: 0, pick: Pick::Current })
+                // A partition picked before the image is the one the image is
+                // meant for, where it fits there at all.
+                let wanted = self.state.wanted_partition;
+                let at = wanted.and_then(|p| partitions.iter().position(|name| *name == p)).unwrap_or(0);
+                *install = Install::Choosing(Choice { kind, size, partitions, partition: at, pick: Pick::Current })
             }
             Event::Script => *install = Install::ConfirmingScript,
             Event::System { name, version, sizes } => *install = Install::SystemChoosing(SystemChoice { name, version, sizes, size: 0 }),
@@ -270,7 +274,35 @@ impl App {
                     (Outcome::Failed(_), Install::Scripting { running: true, .. }) => Some(Damage::Script),
                     _ => None,
                 };
+                let stopped = matches!(outcome, Outcome::Failed(_) | Outcome::Cancelled);
+                // What became of the package joins the tally of this run.
+                if self.state.queue_running {
+                    let name = self.state.package_name.clone().unwrap_or_default();
+                    let ended = match &outcome {
+                        Outcome::Failed(failure) => Err(format!("{failure:?}")),
+                        Outcome::Refused(why) => Err(format!("{why:?}")),
+                        Outcome::Cancelled => Err("cancelled".into()),
+                        _ => Ok(()),
+                    };
+                    self.state.queue_results.push((name, ended));
+                }
                 *install = Install::Finished { outcome, damage };
+                // The next package of the queue is ready for the runtime to
+                // start, unless one stopped it.
+                if stopped {
+                    self.state.queue_at = None;
+                } else if let Some((done, total)) = self.state.queue_at {
+                    match (!self.state.queue.is_empty()).then(|| self.state.queue.remove(0)) {
+                        Some(next) => {
+                            self.state.queue_at = Some((done + 1, total));
+                            self.state.queue_next = Some(next);
+                        }
+                        None => {
+                            self.state.queue_at = None;
+                            self.state.queue_running = false;
+                        }
+                    }
+                }
             }
         }
         if self.screen() == Screen::Installing {
@@ -278,9 +310,53 @@ impl App {
         }
     }
 
+    /// Start the package the queue left ready, as choosing it would: nothing
+    /// when the queue has none.
+    pub fn start_queued_next(&mut self, now: u64) -> Vec<Effect> {
+        match self.state.queue_next.take() {
+            Some(next) => self.install_queued(next.place, next.path, next.size, now),
+            None => Vec::new(),
+        }
+    }
+
     /// Install the file of `size` bytes at `path` in `place`, its page
     /// following how it goes; one install at a time.
     pub(super) fn install_file(&mut self, place: Place, path: String, size: u64, now: u64) -> Vec<Effect> {
+        // A list opened to pick a file for the computer offers that file
+        // rather than installing it.
+        if self.state.export_pick {
+            self.state.export_pick = false;
+            self.state.usb_storage_file = Some(path.clone());
+            self.state.usb_storage_on = true;
+            self.open(Screen::Settings);
+            self.refresh();
+            return vec![Effect::UsbStorageFile(place, path)];
+        }
+        // An image chosen to be flashed goes in at once: the page then asks
+        // which partition it belongs in.
+        if self.state.images_only {
+            self.state.images_only = false;
+            self.state.flash_menu = false;
+            return self.install_queued(place, path, size, now);
+        }
+        // A file chosen in a place is picked for the queue rather than
+        // installed at once: one file is a queue of one. Picking it again
+        // takes it back out.
+        match self.state.queue.iter().position(|q| q.place == place && q.path == path) {
+            Some(k) => {
+                self.state.queue.remove(k);
+            }
+            None => self.state.queue.push(Queued { place, path, size }),
+        }
+        let said = format!("已选 {}", self.state.queue.len());
+        self.say(&said, now);
+        self.refresh();
+        Vec::new()
+    }
+
+    /// Install the package at `path` in `place` now, its page following it:
+    /// the queue's packages start this way.
+    pub(super) fn install_queued(&mut self, place: Place, path: String, size: u64, now: u64) -> Vec<Effect> {
         let name = file_name(&path);
         self.install_named(Source::File(place), name, size, Effect::InstallFile(place, path), now)
     }

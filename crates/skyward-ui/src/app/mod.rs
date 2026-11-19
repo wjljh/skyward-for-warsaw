@@ -91,6 +91,9 @@ pub enum Screen {
     /// Mounting and unmounting the slot's partitions.
     Mount,
     Install,
+    /// The partitions an image can be flashed into, to pick one before the
+    /// image is looked for.
+    Flash,
     /// A place's folders and the files in them that can be installed, to
     /// choose one.
     Choose(Place),
@@ -309,6 +312,18 @@ pub enum Action {
     /// Open the entry at this place in a place's folder: a folder to look
     /// in, or the file to install.
     ChooseEntry(usize),
+    /// Start the packages queued, the first of them now.
+    StartQueue,
+    /// Take the package at `index` of the queue out of it.
+    Dequeue(usize),
+    /// Open the list of partitions an image can be flashed into.
+    FlashImages(Place),
+    /// Flash an image into `partition`, which is picked first.
+    FlashInto(&'static str),
+    /// Leave for the page this one belongs under, rather than one step back.
+    BackToRoot,
+    /// Open a place's list to pick a file to offer the computer as a disk.
+    ChooseForExport(Place),
     /// Go up to the folder this many levels below the top of the list
     /// shown, by its place in the path shown over the list.
     OpenAncestor(usize),
@@ -418,6 +433,10 @@ pub enum Effect {
     Reboot(Target),
     /// A short tap of the vibration motor.
     Haptic,
+    /// Offer the data partition to the computer as a disk, or take it back.
+    UsbStorage(bool),
+    /// Offer the file at path `path` of `place` to the computer as a disk.
+    UsbStorageFile(Place, String),
     /// The motor's two quick ticks as the power key turns the screen off,
     /// as strong as the phone's own system plays them whatever the
     /// vibration settings say.

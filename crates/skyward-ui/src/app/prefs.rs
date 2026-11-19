@@ -16,6 +16,8 @@ pub enum Switch {
     Vibrate,
     /// Offer internal storage to a computer over USB.
     FileTransfer,
+    /// Offer the data partition to the computer as a disk of its own.
+    UsbStorage,
     /// Compress a backup.
     Compress,
     /// Read a backup back once it is written.

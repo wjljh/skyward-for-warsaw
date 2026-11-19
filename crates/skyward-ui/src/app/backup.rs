@@ -70,8 +70,8 @@ pub struct BackupAt {
 /// How backing up or restoring ended.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BackupEnd {
-    /// A backup made, in the folder of this name.
-    Saved(String),
+    /// A backup made, in the folder of this name, taking `written` bytes.
+    Saved { folder: String, written: u64 },
     /// A backup restored, but for what it held in the folders of users gone
     /// since, which only the system makes: where those were.
     Restored { unmade: Vec<String> },

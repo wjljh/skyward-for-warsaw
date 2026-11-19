@@ -2,10 +2,48 @@
 
 use super::*;
 
+/// A package waiting its turn: where it is, and its path in that place.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Queued {
+    pub place: Place,
+    pub path: String,
+    pub size: u64,
+}
+
 /// Choices the pages show and the user changes, and where installing
 /// stands.
 #[derive(Clone, Debug, PartialEq)]
 pub struct State {
+    /// The kernel carries the mass storage function, so the data partition can
+    /// be handed to a computer as a disk.
+    pub usb_storage: bool,
+    /// Packages chosen to be installed one after another, in the order they
+    /// were chosen.
+    pub queue: Vec<Queued>,
+    /// The package of the queue the run in progress is, and how many there are.
+    pub queue_at: Option<(usize, usize)>,
+    /// The package to start once the one being installed ends.
+    pub queue_next: Option<Queued>,
+    /// How each package of the queue's run ended: its name, and why it did not
+    /// install when it did not.
+    pub queue_results: Vec<(String, Result<(), String>)>,
+    /// A queue is being installed, its tally kept until it ends.
+    pub queue_running: bool,
+    /// The data partition is offered to the computer as a disk right now.
+    pub usb_storage_on: bool,
+    /// The file the computer is offered, by its name.
+    pub usb_storage_file: Option<String>,
+    /// The list on the choose page is picking a file to offer the computer.
+    pub export_pick: bool,
+    /// The list on the choose page is picking a partition image to flash.
+    pub images_only: bool,
+    /// The install page shows the partitions an image can be flashed into.
+    pub flash_menu: bool,
+    /// The partition the image is meant for, where it was picked first.
+    pub wanted_partition: Option<&'static str>,
+    /// The recovery asks for the screen lock first, and keeps everything but
+    /// decrypting and rebooting out of reach until the data partition is open.
+    pub unlock_first: bool,
     /// The language the pages speak.
     pub lang: Lang,
     /// The language was chosen on the language page, now or at an earlier
@@ -186,6 +224,19 @@ pub struct State {
 impl Default for State {
     fn default() -> Self {
         State {
+            queue: Vec::new(),
+            queue_at: None,
+            queue_next: None,
+            queue_results: Vec::new(),
+            queue_running: false,
+            usb_storage: false,
+            usb_storage_on: false,
+            usb_storage_file: None,
+            export_pick: false,
+            images_only: false,
+            flash_menu: false,
+            wanted_partition: None,
+            unlock_first: false,
             lang: Lang::Hans,
             language_chosen: false,
             dark: false,

@@ -2367,6 +2367,7 @@ dependencies = [
  "anyhow",
  "clap",
  "evdev",
+ "flate2",
  "hex",
  "libc",
  "procfs",

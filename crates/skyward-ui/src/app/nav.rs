@@ -9,6 +9,12 @@ const WAIT_OR_STOP: Text = ["请等待完成或停止后再返回", "請等待�
 impl App {
     /// Open `screen` over the page shown, sliding in over it.
     pub(super) fn open(&mut self, screen: Screen) {
+        // A recovery set to ask for the screen lock first lets nothing but
+        // decrypting and rebooting be reached until the data partition is
+        // open.
+        if self.state.unlock_first && !self.state.data.storage_open() && !matches!(screen, Screen::Decrypt | Screen::Reboot) {
+            return;
+        }
         self.leave(false);
         self.push(screen);
     }
@@ -78,6 +84,35 @@ impl App {
     /// stopped; while a package is being read or written, the page stays.
     /// In the file manager, back climbs a folder until it reaches the root,
     /// and in a place, until it reaches the place's top.
+    /// The page a screen belongs under: where the bar's own back goes, a
+    /// whole level at a time rather than one step.
+    fn root_of(screen: Screen) -> Screen {
+        match screen {
+            Screen::Choose(_) | Screen::Flash | Screen::Installing => Screen::Install,
+            Screen::Restore | Screen::RestoreBackup | Screen::BackupJob => Screen::Backup,
+            Screen::ScreenOff | Screen::Language | Screen::TimeZone => Screen::Settings,
+            Screen::Files | Screen::Terminal | Screen::Logs | Screen::Search | Screen::Editor => Screen::Advanced,
+            _ => Screen::Home,
+        }
+    }
+
+    /// Go back to the page this one belongs under, however many steps that
+    /// takes; a page that is not under the one shown is opened afresh.
+    pub(super) fn back_to_root(&mut self, now: u64) -> Vec<Effect> {
+        let root = Self::root_of(self.screen());
+        let mut fx = Vec::new();
+        if self.stack.iter().any(|(s, _, _)| *s == root) {
+            while self.screen() != root && self.stack.len() > 1 {
+                fx.extend(self.back(now));
+            }
+            fx
+        } else {
+            self.open(root);
+            fx.extend(self.arrive_at(root));
+            fx
+        }
+    }
+
     pub(super) fn back(&mut self, now: u64) -> Vec<Effect> {
         let (l, mut fx) = (self.state.lang, Vec::new());
         if self.stack.len() <= 1 {

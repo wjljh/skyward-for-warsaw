@@ -7,7 +7,13 @@ impl App {
     pub(super) fn act(&mut self, action: Action, now: u64) -> Vec<Effect> {
         let l = self.state.lang;
         match action {
+            Action::BackToRoot => return self.back_to_root(now),
             Action::Open(s) => {
+                // A list opened from the install page installs packages, not
+                // only the images a flash of a partition takes.
+                if matches!(s, Screen::Choose(_)) {
+                    self.state.images_only = false;
+                }
                 if s == Screen::Search && self.screen() == Screen::Home {
                     // The bar moves up from where it stands unfolded: a
                     // page easing there for the keys gets there at once.
@@ -52,6 +58,7 @@ impl App {
                 let on = match switch {
                     Switch::Vibrate => &mut self.state.vibrate,
                     Switch::FileTransfer => &mut self.state.file_transfer,
+                    Switch::UsbStorage => &mut self.state.usb_storage_on,
                     Switch::Compress => &mut self.state.compress,
                     Switch::Verify => &mut self.state.verify,
                     Switch::Signature => &mut self.state.check_signature,
@@ -65,6 +72,57 @@ impl App {
                 if switch == Switch::FileTransfer {
                     return vec![Effect::FileTransfer(now_on)];
                 }
+                if switch == Switch::UsbStorage {
+                    return vec![Effect::UsbStorage(now_on)];
+                }
+            }
+            Action::StartQueue => {
+                let mut queue = std::mem::take(&mut self.state.queue);
+                if queue.is_empty() {
+                    self.state.queue = queue;
+                    return Vec::new();
+                }
+                let total = queue.len();
+                // A run begun anew starts its tally over; one carried on after a
+                // package stopped it keeps what already happened.
+                if !self.state.queue_running {
+                    self.state.queue_results.clear();
+                }
+                self.state.queue_running = true;
+                let first = queue.remove(0);
+                let running = !queue.is_empty();
+                self.state.queue = queue;
+                self.state.queue_at = running.then_some((1, total));
+                // The first package starts as a chosen one does, so that the
+                // page follows it and an image asks for its partition.
+                return self.install_queued(first.place, first.path, first.size, now);
+            }
+            Action::Dequeue(index) => {
+                if index < self.state.queue.len() {
+                    self.state.queue.remove(index);
+                }
+                self.refresh();
+                return Vec::new();
+            }
+            Action::FlashImages(_) => {
+                self.open(Screen::Flash);
+                return Vec::new();
+            }
+            Action::FlashInto(partition) => {
+                self.state.wanted_partition = Some(partition);
+                let place = Place::Storage;
+                self.open(Screen::Choose(place));
+                self.state.images_only = true;
+                let folder = self.state.folder(Screen::Choose(place)).path.clone();
+                return vec![Effect::ReadPlace(place, folder)];
+            }
+            Action::ChooseForExport(place) => {
+                // The list is read at once: the page shows what the folder
+                // holds, every file and not only those that can be installed.
+                self.state.export_pick = true;
+                self.open(Screen::Choose(place));
+                let folder = self.state.folder(Screen::Choose(place)).path.clone();
+                return vec![Effect::ReadPlace(place, folder)];
             }
             Action::MountToggle(i) => {
                 if self.state.mount_failure.take().is_some() {

@@ -10,6 +10,7 @@ use std::fs;
 use std::io::{self, ErrorKind};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 pub enum Event {
     /// A touch and when the panel reported it, on [`monotonic_ms`]'s clock.
@@ -179,6 +180,29 @@ impl Panel {
 /// The touchscreen and the hardware buttons. /dev/input is watched, so a
 /// device that shows up later, such as a touch panel whose driver module
 /// loads after the UI starts, is picked up when it appears.
+/// How many times the touchscreen's interrupt has been raised, as the kernel
+/// counts it: it rises while a finger is on the panel, whether or not the
+/// driver hands the touch over.
+fn touch_interrupts() -> u64 {
+    let Ok(text) = fs::read_to_string("/proc/interrupts") else {
+        return 0;
+    };
+    let mut total = 0;
+    for line in text.lines() {
+        let name = line.to_ascii_lowercase();
+        if !(name.contains("goodix") || name.contains("touch")) {
+            continue;
+        }
+        for field in line.split_whitespace().skip(1) {
+            match field.parse::<u64>() {
+                Ok(count) => total += count,
+                Err(_) => break,
+            }
+        }
+    }
+    total
+}
+
 pub struct Inputs {
     watch: OwnedFd,
     /// The watch and every device taken in: a touch or a key press keeps
@@ -189,6 +213,14 @@ pub struct Inputs {
     seen: HashSet<PathBuf>,
     /// What the touchscreen is told each time its panel is taken in.
     touch_writes: Vec<Write>,
+    /// How many times the touchscreen's interrupt has been raised, as the
+    /// kernel counts it, and when it was last raised with no event following.
+    touch_irqs: u64,
+    raised_at: Option<Instant>,
+    /// When the touchscreen last handed over an event, and when its driver was
+    /// last loaded afresh.
+    touched_at: Instant,
+    reloaded_at: Option<Instant>,
     w: f32,
     h: f32,
 }
@@ -215,6 +247,10 @@ impl Inputs {
             buttons: Vec::new(),
             seen: HashSet::new(),
             touch_writes,
+            touch_irqs: touch_interrupts(),
+            raised_at: None,
+            touched_at: Instant::now(),
+            reloaded_at: None,
             w: w as f32,
             h: h as f32,
         };
@@ -256,6 +292,66 @@ impl Inputs {
         Ok(())
     }
 
+    /// Tell the touchscreen again what the device description writes to it.
+    /// A panel that has been off comes back with the driver's own settings,
+    /// and one left in the wrong mode hands over events the phone's touch
+    /// layer refuses, which is a touchscreen that answers nothing.
+    pub fn retell(&self) {
+        for w in &self.touch_writes {
+            match fs::write(&w.path, &w.value) {
+                Ok(()) => {
+                    let _ = skyward_sys::kmsg(&format!("wrote {} to {} for the touchscreen again", w.value, w.path));
+                }
+                Err(e) => {
+                    let _ = skyward_sys::kmsg(&format!("could not write {} to {} again: {e:#}", w.value, w.path));
+                }
+            }
+        }
+    }
+
+    /// Watch the touchscreen for a driver that has stopped handing events over
+    /// while the controller keeps raising its interrupt — the state this
+    /// phone's controller is left in when its panel goes to rest — and load
+    /// the driver afresh when it finds one. `lit` whether the panel is on.
+    pub fn watch_touch(&mut self, lit: bool) -> Result<()> {
+        const SILENT: Duration = Duration::from_secs(2);
+        const AGAIN: Duration = Duration::from_secs(60);
+        if !lit || self.panel.is_none() {
+            self.raised_at = None;
+            return Ok(());
+        }
+        let irqs = touch_interrupts();
+        if irqs > self.touch_irqs {
+            // The controller asked for attention: an event is due of the driver.
+            if self.raised_at.is_none() {
+                self.raised_at = Some(Instant::now());
+            }
+        }
+        self.touch_irqs = irqs;
+        let Some(raised) = self.raised_at else {
+            return Ok(());
+        };
+        if self.touched_at > raised || raised.elapsed() < SILENT {
+            // An event came after the interrupt, so the driver is well.
+            if self.touched_at > raised {
+                self.raised_at = None;
+            }
+            return Ok(());
+        }
+        if self.reloaded_at.is_some_and(|at| at.elapsed() < AGAIN) {
+            return Ok(());
+        }
+        self.raised_at = None;
+        // The driver is not loaded afresh: one loaded while the panel is in use
+        // leaves a kernel trace behind and a touchscreen that answers nothing,
+        // which is worse than saying so. What is found is written down.
+        if self.reloaded_at.is_none_or(|at| at.elapsed() >= AGAIN) {
+            self.reloaded_at = Some(Instant::now());
+            let _ = skyward_sys::kmsg("the touchscreen asks to be heard and is not handing events over: goodix_core is left as it is")?;
+        }
+        Ok(())
+    }
+
     /// Empty the watch's queue; true when /dev/input changed.
     fn changed(&self) -> Result<bool> {
         let mut buf = [0u8; 4096];
@@ -291,6 +387,7 @@ impl Inputs {
             self.scan()?;
         }
         let mut out = Vec::new();
+        let heard = out.len();
         if let Some(panel) = &mut self.panel {
             match panel.read(self.w, self.h, &mut out) {
                 Ok(()) => {}
@@ -301,6 +398,9 @@ impl Inputs {
                 }
                 Err(e) => return Err(e).context("read touch events"),
             }
+        }
+        if out.len() > heard {
+            self.touched_at = Instant::now();
         }
         let mut removed = Vec::new();
         for (i, (path, b)) in self.buttons.iter_mut().enumerate() {

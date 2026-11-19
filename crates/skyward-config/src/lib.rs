@@ -271,6 +271,12 @@ pub struct Device {
     /// System property that carries the vendor OS version.
     #[serde(default = "default_os_version_prop")]
     pub os_version_prop: String,
+    /// Whether the recovery asks for the screen lock before it does anything
+    /// else, and keeps everything but decrypting and rebooting out of reach
+    /// until the data partition is open: a phone in someone's hands that has
+    /// not been unlocked does not get to install, wipe or read anything.
+    #[serde(default)]
+    pub unlock_first: bool,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

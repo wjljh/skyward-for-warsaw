@@ -191,6 +191,19 @@ fn installable(e: &FileRow) -> bool {
     }
 }
 
+/// Whether a list picking a partition image shows an entry: a folder, or a
+/// file named as an image.
+fn images(e: &FileRow) -> bool {
+    if e.name.starts_with('.') {
+        return false;
+    }
+    match e.kind {
+        FileKind::Folder { .. } | FileKind::Link { folder: true, .. } => true,
+        FileKind::File | FileKind::Link { folder: false, .. } => std::path::Path::new(&e.name).extension().is_some_and(|ext| ext.eq_ignore_ascii_case("img")),
+        FileKind::Special => false,
+    }
+}
+
 /// Whether the installer takes a file by its name: an update package, a
 /// zip that installs itself, or a partition image.
 pub(crate) fn installs(e: &FileRow) -> bool {
@@ -292,7 +305,17 @@ impl App {
     /// the place's top, or could not: it becomes the folder shown to choose
     /// a file to install in, with what it holds that may be installed.
     pub fn set_place(&mut self, place: Place, folder: String, files: Result<Vec<FileRow>, String>, listed: i64) {
-        let files = files.map(|entries| entries.into_iter().filter(installable).collect());
+        // A list opened to pick a file for the computer shows every file, not
+        // only those that can be installed.
+        let files = files.map(|entries| {
+            if self.state.export_pick {
+                entries
+            } else if self.state.images_only {
+                entries.into_iter().filter(images).collect()
+            } else {
+                entries.into_iter().filter(installable).collect()
+            }
+        });
         self.show_folder(Screen::Choose(place), folder, files, listed);
     }
 
@@ -347,6 +370,7 @@ impl App {
             let name = came_from.map(|c| c.as_os_str().to_string_lossy().into_owned());
             let k = name.and_then(|name| files.as_ref().ok()?.iter().position(|e| e.name == name));
             let row = if screen == Screen::Files { Action::OpenEntry } else { Action::ChooseEntry };
+            let _ = &row;
             self.top_mut().2 = match k {
                 Some(k) => Focus::On(Spot { stop: Stop::Hit(row(k)), group: Group::Page, rect: Rect::new(0.0, 0.0, 0.0, 0.0) }),
                 None => Focus::Unset,

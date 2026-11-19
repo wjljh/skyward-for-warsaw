@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 mod backup;
 #[cfg(target_os = "android")]
 mod decrypt;
+mod usb_storage;
 #[cfg(target_os = "android")]
 mod filework;
 #[cfg(target_os = "android")]
@@ -718,6 +719,14 @@ fn mount_firmware(partition: &str) -> Result<()> {
 #[cfg(target_os = "android")]
 const BUILD_VERSION: [&str; 3] = ["ro.build.version.release", "ro.build.version.security_patch", "ro.vendor.build.security_patch"];
 
+/// What the phone's own drivers read to tell which product they run on: the
+/// eSE service of this phone picks its power sequence by
+/// `ro.product.product.name`. The stock recovery carries its own, older
+/// values, and a recovery can set only a property no file has set yet, so
+/// they are left out of the recovery's property file and set from the
+/// installed system instead.
+const PRODUCT_IDENTITY: [&str; 4] = ["ro.product.product.name", "ro.product.product.device", "ro.product.product.model", "ro.build.flavor"];
+
 /// Set each of [`BUILD_VERSION`] to the installed system's value. An earlier
 /// run of the recovery service may have set it already, and init sets such
 /// a property only once.
@@ -729,6 +738,36 @@ fn adopt_installed_version(props: &std::collections::HashMap<String, String>) ->
             skyward_sys::set_prop(name, value)?;
         }
         skyward_sys::kmsg(&format!("{name} is the installed system's {value}"))?;
+    }
+    // The phone's own eSE service reads ro.product.product.name to pick the
+    // power sequence for a product it knows, and this phone's own sequence does
+    // not bring the eSE up in a recovery: the chip only comes up on the path it
+    // takes for a product it does not know. The recovery says which product it
+    // is itself, so that path is the one taken.
+    {
+        let name = "ro.product.product.name";
+        if skyward_sys::prop(name).as_deref() != Some("skyward") {
+            match skyward_sys::set_prop(name, "skyward") {
+                Ok(()) => skyward_sys::kmsg(&format!("{name} is skyward, the recovery's own"))?,
+                Err(e) => skyward_sys::kmsg(&format!("{name} stays as it is: {e:#}"))?,
+            }
+        }
+    }
+    // Which product this is matters to the phone's own drivers; a build that
+    // says nothing of one leaves the recovery's own value in place.
+    for name in PRODUCT_IDENTITY {
+        match props.get(name) {
+            Some(value) if skyward_sys::prop(name).as_ref() != Some(value) => {
+                // A name the boot already fixed stays as it is: the recovery
+                // must still come up when one of these cannot be set.
+                match skyward_sys::set_prop(name, value) {
+                    Ok(()) => skyward_sys::kmsg(&format!("{name} is the installed system's {value}"))?,
+                    Err(e) => skyward_sys::kmsg(&format!("{name} stays as it is: {e:#}"))?,
+                }
+            }
+            Some(_) => {}
+            None => skyward_sys::kmsg(&format!("the installed system says no {name}"))?,
+        }
     }
     Ok(())
 }

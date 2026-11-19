@@ -335,6 +335,22 @@ fn list(app: &mut App, folder: String) -> Result<()> {
 
 /// Read a folder of `place` to choose a file to install in, as it is now;
 /// `folder` is its path from the place's top.
+/// How many bytes a folder holds on disk, its folders counted with it.
+fn folder_bytes(folder: &Path) -> u64 {
+    let Ok(entries) = fs::read_dir(folder) else {
+        return 0;
+    };
+    let mut total = 0;
+    for entry in entries.flatten() {
+        match entry.file_type() {
+            Ok(kind) if kind.is_dir() => total += folder_bytes(&entry.path()),
+            Ok(_) => total += entry.metadata().map(|m| m.len()).unwrap_or(0),
+            Err(_) => {}
+        }
+    }
+    total
+}
+
 fn list_place(app: &mut App, place: Place, folder: String) -> Result<()> {
     let files = read_folder(&in_place(place, &folder)).map_err(|e| format!("{e:#}"));
     app.set_place(place, folder, files, unix_now()?);
@@ -507,7 +523,10 @@ fn delete_backup(place: Place, folder: &Path) -> Result<()> {
 fn backup_end(end: backup::End) -> BackupEnd {
     match end {
         backup::End::Saved(folder) => {
-            BackupEnd::Saved(folder.file_name().expect("a backup's folder has a name").to_string_lossy().into_owned())
+            BackupEnd::Saved {
+                folder: folder.file_name().expect("a backup's folder has a name").to_string_lossy().into_owned(),
+                written: folder_bytes(&folder),
+            }
         }
         backup::End::Restored { unmade } => BackupEnd::Restored { unmade: unmade.iter().map(|p| p.display().to_string()).collect() },
         backup::End::Stopped => BackupEnd::Stopped,
@@ -1273,7 +1292,17 @@ impl<'a> Pages<'a> {
             | Work::SwitchSystem { .. }
             | Work::SystemStopped => start,
         };
+        // A recovery set to ask for the screen lock first shows that page
+        // before any other, so that a phone nobody has unlocked is not read.
+        let first = match first {
+            Screen::Decrypt | Screen::Reboot | Screen::Fastboot | Screen::CantStart | Screen::Unhandled => first,
+            _ if cfg.device.unlock_first => Screen::Decrypt,
+            _ => first,
+        };
         let mut app = App::new(first, w, h, cfg.display.density as f32 / 160.0);
+        app.state.unlock_first = cfg.device.unlock_first;
+        app.state.usb_storage = crate::usb_storage::supported();
+        let _ = skyward_sys::kmsg(&format!("usb mass storage is {}", if app.state.usb_storage { "supported" } else { "not supported" }));
         app.set_screen_corners(cfg.display.corner_radius as f32);
         // The settings kept from the starts before are back before the first
         // frame, and before file transfer starts with its switch and the time
@@ -1594,6 +1623,13 @@ impl<'a> Pages<'a> {
             self.drive_at = Instant::now();
         }
         self.installer_told(now)?;
+        // A package of the queue that ended leaves the next one to start.
+        let next = self.app.start_queued_next(now);
+        for fx in next {
+            for again in self.effect(fx, now)? {
+                let _ = self.effect(again, now)?;
+            }
+        }
         self.eraser_told(now)?;
         self.files_told(now)?;
         self.relabel_told(now);
@@ -1690,6 +1726,18 @@ impl<'a> Pages<'a> {
         let panel = self.app.panel(now);
         let mut shown = false;
         if panel.is_some() {
+            if self.blanked {
+                // The panel comes on again with its touchscreen told again
+                // what the device description writes to it: a driver that lost
+                // it while the panel was off hands over events the phone's own
+                // touch layer refuses.
+                self.inputs.retell();
+        }
+        // A touchscreen whose driver stopped handing events over is loaded
+        // afresh while its panel is on.
+        if panel.is_some() {
+            self.inputs.watch_touch(true)?;
+            }
             // A display turned off comes on again with a frame drawn for it.
             if self.app.take_dirty() || !self.surface.is_on() {
                 let t0 = Instant::now();
@@ -1724,10 +1772,11 @@ impl<'a> Pages<'a> {
             self.surface.speed_up()?;
             self.rested_at = None;
         } else if self.surface.is_on() {
-            // With the backlight off, the panel rests, and the touch
-            // controller following it stops drawing power.
-            self.surface.rest()?;
-            self.rested_at = Some(Instant::now());
+            // The panel is left on with the backlight off rather than put to
+            // rest: a panel that rests takes the touch controller following it
+            // with it, and this phone's controller does not come back from
+            // that in a recovery.
+            self.rested_at = None;
         } else if self.rested_at.is_some_and(|at| at.elapsed() >= REST) {
             // Rested long enough, the display goes off: the panel and the
             // display processor feeding it stop drawing power.
@@ -2686,6 +2735,11 @@ impl Pages<'_> {
             }
             Effect::EnterRecovery => self.enter_recovery()?,
             Effect::FileTransfer(on) => self.file_transfer(on, now)?,
+            Effect::UsbStorage(on) => self.usb_storage(on, now)?,
+            Effect::UsbStorageFile(place, path) => {
+                let file = in_place(place, &path);
+                self.usb_storage_file(&file, now)?;
+            }
         }
         Ok(Vec::new())
     }
@@ -2988,6 +3042,53 @@ impl Pages<'_> {
 
     /// Turn file transfer on or off. A port that something else has takes
     /// file transfer on, or leaves it, when it comes back to rest.
+    /// Take the disk the computer was offered back, and let the port carry adb
+    /// and MTP again.
+    fn usb_storage(&mut self, on: bool, now: u64) -> Result<()> {
+        if on {
+            // A disk is offered by handing over a file, not here.
+            return Ok(());
+        }
+        // The port is given back whatever the gadget says: a disk that cannot
+        // be taken down must not leave the phone without adb as well.
+        let taken = crate::usb_storage::stop();
+        let back = skyward_sys::usb::switch(skyward_sys::usb::resting(), Duration::from_secs(10));
+        match (&taken, &back) {
+            (Ok(()), Ok(())) => self.app.state.usb_storage_file = None,
+            _ => {
+                let said = format!("USB mass storage: {:#}; the port: {:#}", taken.err().map(|e| format!("{e:#}")).unwrap_or_default(), back.err().map(|e| format!("{e:#}")).unwrap_or_default());
+                skyward_sys::kmsg(&said)?;
+                self.app.report(&said, now);
+            }
+        }
+        Ok(())
+    }
+
+    /// Offer the file at `file` to the computer as a disk: the port carries
+    /// nothing else while it does, and the file is read and written whole.
+    fn usb_storage_file(&mut self, file: &Path, now: u64) -> Result<()> {
+        let done = (|| -> Result<()> {
+            if !file.is_file() {
+                return Err(anyhow::anyhow!("{} is not a file", file.display()));
+            }
+            skyward_sys::usb::set("none", Duration::from_secs(10))?;
+            crate::usb_storage::start(file)
+        })();
+        match done {
+            Ok(()) => {}
+            Err(e) => {
+                let _ = crate::usb_storage::stop();
+                let _ = skyward_sys::usb::switch(skyward_sys::usb::resting(), Duration::from_secs(10));
+                self.app.state.usb_storage_on = false;
+                self.app.state.usb_storage_file = None;
+                let said = format!("USB mass storage: {e:#}");
+                skyward_sys::kmsg(&said)?;
+                self.app.report(&said, now);
+            }
+        }
+        Ok(())
+    }
+
     fn file_transfer(&mut self, on: bool, now: u64) -> Result<()> {
         let rests = !self.fastboot && !self.sideloading;
         match (on, self.transfer.take()) {

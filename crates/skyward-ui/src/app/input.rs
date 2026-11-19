@@ -89,7 +89,7 @@ impl App {
                 let on_dock = dock.filter(|&(_, top)| y >= top);
                 let button = self.frame.as_ref().and_then(|fr| fr.button).map(|(_, a)| (a, widgets::button_rect(&t)));
                 let hit = if self.frame.as_ref().is_some_and(|fr| fr.back) && back.contains(x, y) {
-                    Some((Action::Back, back))
+                    Some((Action::BackToRoot, back))
                 } else if let Some(button) = button.filter(|(_, r)| r.contains(x, y)) {
                     Some(button)
                 } else if let Some((d, top)) = on_dock {
@@ -294,7 +294,7 @@ impl App {
     pub(super) fn pressing(&self) -> Option<Action> {
         let button = self.frame.as_ref().and_then(|fr| fr.button).map(|(_, a)| a);
         match self.drag {
-            Drag::Press { action: Some(a @ (Action::Back | Action::CloseSearch | Action::Open(Screen::Search))), .. } => Some(a),
+            Drag::Press { action: Some(a @ (Action::Back | Action::BackToRoot | Action::CloseSearch | Action::Open(Screen::Search))), .. } => Some(a),
             Drag::Press { action: Some(a), .. } if Some(a) == button => Some(a),
             _ => None,
         }

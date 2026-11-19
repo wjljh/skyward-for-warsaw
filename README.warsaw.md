@@ -1,39 +1,33 @@
-# Skyward for the REDMI K90 Ultra (warsaw)
+# Skyward for REDMI K90 Ultra (warsaw)
 
-This is an unofficial fork of [kirklin/skyward](https://github.com/kirklin/skyward)
-that brings the recovery up on the REDMI K90 Ultra (warsaw), which ships
-HyperOS OS4.0.8.0.XHPCNXM. It is based on upstream c5e09f6.
+上游 [kirklin/skyward](https://github.com/kirklin/skyward)（GPL-3.0）的本机适配分支，基于上游 c5e09f6。
+目标机型：REDMI K90 Ultra（warsaw），HyperOS OS4.0.8.0.XHPCNXM。
 
-## What was wrong, and what fixed it
+## 适配内容
 
-| Symptom | Cause | Fix |
+| 问题 | 原因 | 处理 |
 |---|---|---|
-| The data partition never opens | The vendor eSE HAL only powers the secure element up inside init(), and Skyward asked isCardPresent() first | skyward-omapi: connect before asking |
-| The secure element is still not found | ro.product.product.name was adopted from the installed system (miproduct_warsaw), and the vendor HAL then takes a model-specific path that cannot power the eSE up in a recovery | Keep the installed properties, but set ro.product.product.name to skyward |
-| WLAN never comes up | The config asked for a wlan_mac.bin this phone does not have | Removed that firmware entry |
-| The touchscreen answers nothing after the screen goes off | The panel is rested with the backlight off, and this phone's goodix controller does not come back from that in a recovery | Leave the panel on with the backlight off, and write the device's touch settings again when it comes back |
-| The vendor HALs cannot load their libraries | The runtime APEX is not mounted and ld.config.txt has no [odm] section | A [[service]] one-shot unpacks the APEX, copies the libraries, writes ld.config.txt and sets up the nodes the HALs need |
+| 解不开 data 分区 | 厂商 eSE HAL 只在 `init()` 里给安全元件上电，Skyward 先问 `isCardPresent()` 得到"没有" | `skyward-omapi`：先连接再询问 |
+| 加上一条仍找不到安全元件 | `ro.product.product.name` 沿用了系统里的 `miproduct_warsaw`，厂商 HAL 走机型专用路径，在 recovery 里无法给 eSE 上电 | 保留系统其余属性，只把该属性设为 `skyward` |
+| WLAN 起不来 | 配置里要的 `wlan_mac.bin` 这台机没有 | 删掉该固件项 |
+| 息屏后触屏失效 | 背光关闭后面板被 rest，这颗 goodix 在 recovery 里回不来 | 只关背光不 rest 面板，亮屏时重写触摸参数 |
+| 厂商 HAL 缺库 | 运行时 APEX 未挂载、`ld.config.txt` 没有 `[odm]` 段 | 用 `[[service]]` 一次脚本解包 APEX、拷贝库、重写 `ld.config.txt`、准备好设备节点 |
 
-## What this fork adds
+## 新增功能
 
-- **Unlock first**: the device config's unlock_first opens on the decrypt page and holds every other page until the data partition opens.
-- **Several packages at once**: choosing files in internal storage picks them for a queue; they install in turn, each with what became of it, and a package that fails leaves the rest a tap away.
-- **Flash a partition image**: a page of the partitions an image goes into (boot, init_boot, vendor_boot, recovery, dtbo, vbmeta) before the image is looked for.
-- **Back that knows where it is**: the bar's back goes to the page a screen belongs under, while a swipe still goes one step.
-- **Backup completion** says what the backup takes on disk against what it holds.
-- **About** names who adapted it, what was fixed, and opens the updater from the system version.
+- `[device] unlock_first`：开机停在解密页，data 未解开前只能解密或重启
+- 多包安装：选文件即入队，依次安装，逐个给出结果，失败可一键续装
+- 刷写分区镜像：先选 boot / init_boot / vendor_boot / recovery / dtbo / vbmeta，再选镜像
+- 左上角返回回到所属页面，侧滑返回退一级
+- 备份完成显示实际占用与原大小之比
+- 关于页显示适配者、修复项，系统版本可点进系统更新
 
-## Building
+## 构建与刷入
 
 ```sh
-export ANDROID_NDK_HOME=/path/to/android-ndk-r29
-export CARGO_HOME=/path/to/cargo RUSTUP_HOME=/path/to/rustup
-
 cargo ndk -t arm64-v8a --platform 30 build --release -p skyward
 cargo ndk -t arm64-v8a --platform 30 build --release -p skyward-system-init
-
-./target/release/skyward-pack recovery \
-  --stock stock-recovery.img \
+./target/release/skyward-pack recovery --stock stock-recovery.img \
   --binary target/aarch64-linux-android/release/skyward \
   --system-init target/system-init/aarch64-linux-android/release/system-init \
   --config devices/warsaw-4.0.8.0.toml \
@@ -41,34 +35,17 @@ cargo ndk -t arm64-v8a --platform 30 build --release -p skyward-system-init
   --mono resources/fonts/KirkMono-Regular.ttf \
   --mono-license resources/fonts/KirkMono-OFL.txt \
   --out skyward-warsaw.img
-```
 
-The image is 100 MiB and holds no kernel: it boots the boot partition's kernel,
-as the phone's own recovery does.
-
-## Flashing
-
-```sh
 fastboot flash recovery skyward-warsaw.img
 fastboot reboot recovery
 ```
 
-Only the recovery partition is written. Nothing else on the phone is touched.
+镜像 100 MiB，不含内核，使用 boot 分区的内核启动；只写入 recovery 分区。
 
-## Known limitations
+## 已知限制
 
-- **USB mass storage** is parked. This phone's data partition is
-  credential-encrypted, so a computer reading it as a disk reads ciphertext,
-  and a raw export has to unmount /data, which once left the file system
-  damaged. Copy files with adb pull, or with the MTP switch in Settings.
-- **Touch**: the driver is not reloaded when the touchscreen stops answering.
-  Reloading it while the panel is in use leaves a kernel trace on this phone and
-  a touchscreen that answers nothing, so Skyward only writes the diagnostic line
-  to the kernel log.
-- **MTP transfer progress** cannot be shown: MTP runs in the phone's own
-  process, not in Skyward.
+- USB 大容量存储已搁置：data 是 FBE，整盘导出在电脑上是密文，且导出需卸载 /data（曾损坏文件系统）。请用 `adb pull` 或设置里的 MTP
+- 触摸驱动不做自动重载：运行中重载会在本机内核留下调用栈且触屏失效，Skyward 只写诊断日志
+- MTP 传输进度无法显示：MTP 在手机自身进程中运行
 
-## Credits
-
-Skyward is by [Kirk Lin](https://github.com/kirklin) and is GPL-3.0.
-The warsaw adaptation is by wjljh and DeepSeek Harness.
+适配：wjljh、DeepSeek Harness

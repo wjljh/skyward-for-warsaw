@@ -6,6 +6,9 @@ English | [简体中文](README.zh-CN.md)
 
 Skyward is a recovery written in Rust, from scratch.
 
+> This fork brings Skyward up on the **REDMI K90 Ultra (warsaw)**: see
+> [README.warsaw.md](README.warsaw.md) for what was fixed and how to build it.
+
 <p align="center">
   <img src="assets/home.png" width="30%" alt="Home">
   <img src="assets/settings-dark.png" width="30%" alt="Settings in dark mode">
